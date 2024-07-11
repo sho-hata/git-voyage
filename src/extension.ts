@@ -1,28 +1,106 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
-import * as vscode from 'vscode';
+import { exec } from "node:child_process";
+import * as vscode from "vscode";
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
-export function activate(context: vscode.ExtensionContext) {
-
-	console.log("aaaa");
-
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "git-voyage" is now active!');
-
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('git-voyage.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from git-voyage!');
+const getGitLogForFile = (
+	workspaceFolder: string,
+	filePath: string,
+	startLine: number,
+	endLine: number,
+): Promise<string> => {
+	return new Promise((resolve, reject) => {
+		exec(
+			`git log -L ${startLine},${endLine}:${filePath}`,
+			{ cwd: workspaceFolder },
+			(error, stdout, stderr) => {
+				if (error) {
+					return reject(stderr);
+				}
+				resolve(stdout);
+			},
+		);
 	});
+};
+
+export function activate(context: vscode.ExtensionContext) {
+	const disposable = vscode.commands.registerTextEditorCommand(
+		"git-voyage.ask",
+		async (textEditor: vscode.TextEditor) => {
+			const workspaceFolder =
+				vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+			const filePath = textEditor.document.fileName;
+			const selection = textEditor.selection;
+			const startLine = selection.start.line + 1;
+			const endLine = selection.end.line + 1;
+
+			if (!workspaceFolder || !filePath) {
+				vscode.window.showErrorMessage("No workspace folder or file found");
+				return;
+			}
+
+			vscode.window.showInformationMessage(
+				`Selected lines: ${startLine} to ${endLine}`,
+			);
+
+			const userInput = await vscode.window.showInputBox({
+				prompt: "Please enter a question",
+			});
+
+			if (!userInput) {
+				vscode.window.showWarningMessage("No string was entered");
+				return;
+			}
+
+			try {
+				const commits = await getGitLogForFile(
+					workspaceFolder,
+					filePath,
+					startLine,
+					endLine,
+				);
+				let chatResponse: vscode.LanguageModelChatResponse | undefined;
+				const [model] = await vscode.lm.selectChatModels({
+					vendor: "copilot",
+					family: "gpt-3.5-turbo",
+				});
+				if (!model) {
+					console.log(
+						"Model not found. Please make sure the GitHub Copilot Chat extension is installed and enabled.",
+					);
+					return;
+				}
+				const messages = [
+					vscode.LanguageModelChatMessage.User(
+						`ask: ${userInput}. Results are brief.`,
+					),
+					vscode.LanguageModelChatMessage.User(commits),
+				];
+				chatResponse = await model.sendRequest(
+					messages,
+					{},
+					new vscode.CancellationTokenSource().token,
+				);
+
+				const fragments: string[] = [];
+				for await (const fragment of chatResponse.text) {
+					fragments.push(fragment);
+				}
+
+				// Stream the code into the editor as it is coming in from the Language Model
+				await textEditor.edit((edit) => {
+					const position = new vscode.Position(
+						startLine - 1,
+						textEditor.document.lineAt(startLine - 2).text.length,
+					);
+					const resultText = fragments.join("\n").replaceAll("\n", "");
+					edit.insert(position, `${resultText}\n`);
+				});
+			} catch (error) {
+				vscode.window.showErrorMessage(`Error: ${error}`);
+			}
+		},
+	);
 
 	context.subscriptions.push(disposable);
 }
 
-// This method is called when your extension is deactivated
 export function deactivate() {}
