@@ -14,8 +14,8 @@
   "contributes": {
     "commands": [
       {
-        "command": "git-voyage.helloWorld",
-        "title": "Hello World"
+        "command": "git-voyage.ask",
+        "title": "ask to git history"
       }
     ]
   },
